@@ -220,32 +220,54 @@ fi
 header "5/5 · MOTD dynamique (tableau de bord SSH)"
 # ══════════════════════════════════════════════════════════════════════════════
 
-MOTD_SRC="$(dirname "$0")/motd-dynamic.sh"
+MOTD_SRC="$(dirname "$(realpath "$0")")/motd-dynamic.sh"
 MOTD_DEST="/etc/profile.d/motd-dynamic.sh"
+MOTD_URL="https://raw.githubusercontent.com/Eucliwood090/Linux-cleanup/main/motd-dynamic.sh"
 
 if [[ -f "$MOTD_DEST" ]]; then
   info "MOTD déjà installé dans $MOTD_DEST — skipping."
-elif [[ ! -f "$MOTD_SRC" ]]; then
-  warn "motd-dynamic.sh introuvable à côté du script — étape ignorée."
-  warn "Télécharge-le depuis : https://github.com/YOURNAME/linux-cleanup"
 else
-  info "Installe un tableau de bord affiché à chaque connexion SSH :"
-  echo "  - Disque, RAM, CPU, température"
-  echo "  - Conteneurs Docker actifs / arrêtés"
-  echo "  - Processus gourmands (CPU/RAM > 5%)"
-  echo "  - Services systemd en échec"
-  echo "  - Taille logs Docker + journald"
-
-  if ask "\nInstaller le MOTD dynamique ?"; then
-    run "cp $MOTD_SRC $MOTD_DEST"
-    run "chmod +x $MOTD_DEST"
-    # Désactiver l'ancien MOTD statique si présent
-    if [[ -f /etc/motd ]] && [[ -s /etc/motd ]]; then
-      run "mv /etc/motd /etc/motd.bak"
-      info "Ancien /etc/motd sauvegardé dans /etc/motd.bak"
+  # Si le fichier n'est pas à côté du script, on le télécharge
+  if [[ ! -f "$MOTD_SRC" ]]; then
+    warn "motd-dynamic.sh introuvable localement — tentative de téléchargement..."
+    TMP_MOTD=$(mktemp /tmp/motd-dynamic.XXXXXX.sh)
+    if command -v curl &>/dev/null; then
+      curl -fsSL "$MOTD_URL" -o "$TMP_MOTD" 2>/dev/null && MOTD_SRC="$TMP_MOTD" \
+        || { error "Téléchargement échoué. Place motd-dynamic.sh dans le même dossier que ce script."; MOTD_SRC=""; }
+    elif command -v wget &>/dev/null; then
+      wget -q "$MOTD_URL" -O "$TMP_MOTD" 2>/dev/null && MOTD_SRC="$TMP_MOTD" \
+        || { error "Téléchargement échoué. Place motd-dynamic.sh dans le même dossier que ce script."; MOTD_SRC=""; }
+    else
+      error "curl et wget introuvables — impossible de télécharger le MOTD."
+      MOTD_SRC=""
     fi
-    success "MOTD installé. Visible à la prochaine connexion SSH."
-    info "Pour tester maintenant : bash $MOTD_DEST"
+  fi
+
+  if [[ -n "$MOTD_SRC" && -f "$MOTD_SRC" ]]; then
+    info "Installe un tableau de bord affiché à chaque connexion SSH :"
+    echo "  - Disque, RAM, CPU, température"
+    echo "  - Conteneurs Docker actifs / arrêtés"
+    echo "  - Processus gourmands (CPU/RAM > 5%)"
+    echo "  - Services systemd en échec"
+    echo "  - Taille logs Docker + journald"
+
+    # Toujours demander, même en mode --auto
+    echo -en "${BOLD}\nInstaller le MOTD dynamique ? [Y/n] ${RESET}"
+    read -r reply
+    if [[ "${reply:-Y}" =~ ^[Yy]$ ]]; then
+      run "cp $MOTD_SRC $MOTD_DEST"
+      run "chmod +x $MOTD_DEST"
+      if [[ -f /etc/motd ]] && [[ -s /etc/motd ]]; then
+        run "mv /etc/motd /etc/motd.bak"
+        info "Ancien /etc/motd sauvegardé dans /etc/motd.bak"
+      fi
+      success "MOTD installé. Visible à la prochaine connexion SSH."
+      info "Pour tester maintenant : bash $MOTD_DEST"
+    else
+      info "MOTD ignoré."
+    fi
+    # Nettoyage fichier temporaire
+    [[ "$MOTD_SRC" == /tmp/* ]] && rm -f "$MOTD_SRC"
   fi
 fi
 
