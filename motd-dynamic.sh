@@ -44,7 +44,7 @@ DISK_USED=$(df -h / | awk 'NR==2{print $3}')
 DISK_TOTAL=$(df -h / | awk 'NR==2{print $2}')
 DISK_PCT=$(df / | awk 'NR==2{gsub(/%/,"",$5); print $5}')
 
-# Docker logs (CORRIGÉ : du -sm pour forcer les Mégaoctets)
+# Docker logs
 DOCKER_LOGS=""
 if [[ -d /var/lib/docker/containers ]]; then
   SZ=$(du -sm /var/lib/docker/containers/*/*-json.log 2>/dev/null \
@@ -52,7 +52,7 @@ if [[ -d /var/lib/docker/containers ]]; then
   [[ -n "$SZ" && "$SZ" -gt 0 ]] && DOCKER_LOGS="${SZ}M"
 fi
 
-# Journal (CORRIGÉ : Regex plus permissive)
+# Journal
 JOURNAL_SIZE=$(journalctl --disk-usage 2>/dev/null \
   | grep -oE '[0-9]+(\.[0-9]+)?[ ]*[KMG]i?B?' | tail -1 || echo "?")
 
@@ -64,11 +64,24 @@ RAM_PCT=$(( RAM_USED * 100 / RAM_TOTAL ))
 RAM_USED_H=$(awk  "BEGIN{printf \"%.1f\", ${RAM_USED}/1048576}")
 RAM_TOTAL_H=$(awk "BEGIN{printf \"%.1f\", ${RAM_TOTAL}/1048576}")
 
-# CPU
+# CPU (Calcul réel en direct via /proc/stat pour éviter le bug LXC Proxmox)
 LOAD=$(cut -d' ' -f1-3 /proc/loadavg)
-LOAD1=$(cut -d' ' -f1 /proc/loadavg)
 CORES=$(nproc)
-CPU_PCT=$(awk "BEGIN{p=int(${LOAD1}*100/${CORES}); print (p>100)?100:p}")
+
+read -r cpu u1 n1 s1 i1 w1 irq1 soft1 steal1 g1 gn1 < <(grep '^cpu ' /proc/stat)
+sleep 0.1
+read -r cpu u2 n2 s2 i2 w2 irq2 soft2 steal2 g2 gn2 < <(grep '^cpu ' /proc/stat)
+
+t1=$((u1+n1+s1+i1+w1+irq1+soft1+steal1+g1+gn1))
+t2=$((u2+n2+s2+i2+w2+irq2+soft2+steal2+g2+gn2))
+d_total=$((t2-t1))
+d_idle=$((i2-i1))
+
+if [[ $d_total -gt 0 ]]; then
+  CPU_PCT=$(( 100 * (d_total - d_idle) / d_total ))
+else
+  CPU_PCT=0
+fi
 
 # Température
 TEMP=""; TEMP_INT=0
@@ -87,7 +100,7 @@ if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
   DOCKER_LIST=$(docker ps --format "{{.Names}}|{{.Status}}" 2>/dev/null | head -10)
 fi
 
-# Processus gourmands CPU ou RAM > 5% (CORRIGÉ : colonnes inversées pour éviter les bugs d'espaces)
+# Processus gourmands CPU ou RAM > 5%
 TOP_PROCS=$(ps -eo %cpu,%mem,comm --sort=-%cpu 2>/dev/null \
   | awk 'NR>1 && ($1>5||$2>5){
       cmd=""; for(i=3;i<=NF;i++) cmd=cmd $i " ";
