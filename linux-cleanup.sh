@@ -45,10 +45,28 @@ require_root() {
   fi
 }
 
+check_dependencies() {
+  if ! command -v curl &>/dev/null; then
+    echo ""
+    warn "La commande 'curl' est introuvable."
+    echo -en "  ${BOLD}Voulez-vous l'installer maintenant (apt-get install curl) ? [O/n] ${RESET}"
+    read -r rep
+    if [[ "${rep:-O}" =~ ^[OoYy]$ ]]; then
+      info "Installation de curl en cours..."
+      apt-get update -qq && apt-get install -y curl >/dev/null
+      success "curl a été installé avec succès."
+    else
+      error "curl est requis pour télécharger les composants. Opération annulée."
+      exit 1
+    fi
+  fi
+}
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  MENU PRINCIPAL
 # ══════════════════════════════════════════════════════════════════════════════
 require_root
+check_dependencies
 
 echo -e "\n${BOLD}${CYAN}"
 echo "  ██╗     ██╗███╗   ██╗██╗   ██╗██╗  ██╗"
@@ -225,7 +243,7 @@ install_motd() {
   # 1. Téléchargement du MOTD choisi
   TMP_MOTD=$(mktemp)
   info "Récupération du script MOTD depuis GitHub..."
-  if curl -fsSL "$url_script" -o "$TMP_MOTD" || wget -q "$url_script" -O "$TMP_MOTD"; then
+  if curl -fsSL "$url_script" -o "$TMP_MOTD"; then
     mv "$TMP_MOTD" "$dest_script"
     chmod +x "$dest_script"
     success "MOTD installé dans $dest_script"
@@ -248,7 +266,7 @@ install_motd() {
   
   info "Installation de la commande 'motd'..."
   TMP_WRAPPER=$(mktemp)
-  if curl -fsSL "$WRAPPER_URL" -o "$TMP_WRAPPER" || wget -q "$WRAPPER_URL" -O "$TMP_WRAPPER"; then
+  if curl -fsSL "$WRAPPER_URL" -o "$TMP_WRAPPER"; then
     mv "$TMP_WRAPPER" "$WRAPPER_DEST"
     chmod +x "$WRAPPER_DEST"
     success "Commande 'motd' installée avec succès."
