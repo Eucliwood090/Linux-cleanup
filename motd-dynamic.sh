@@ -1,218 +1,173 @@
 #!/usr/bin/env bash
 # =============================================================================
-# motd-dynamic.sh — Tableau de bord affiché à chaque connexion SSH
+# motd-dynamic.sh — Tableau de bord SSH compact
 # Installation : sudo cp motd-dynamic.sh /etc/profile.d/motd-dynamic.sh
+# GitHub : https://github.com/Eucliwood090/Linux-cleanup
 # =============================================================================
 
-# ── couleurs ──────────────────────────────────────────────────────────────────
-R='\033[0;31m'; Y='\033[1;33m'; G='\033[0;32m'
-C='\033[0;36m'; B='\033[1;34m'; W='\033[1;37m'
-DIM='\033[2m'; BOLD='\033[1m'; RESET='\033[0m'
+# ── couleurs ─────────────────────────────────────────────────────────────────
+R='\e[0;31m'; Y='\e[1;33m'; G='\e[0;32m'; C='\e[0;36m'
+W='\e[1;37m'; DIM='\e[2m'; BOLD='\e[1m'; RESET='\e[0m'
 
-# ── seuils d'alerte ───────────────────────────────────────────────────────────
-DISK_WARN=70;   DISK_CRIT=90     # % disque
-RAM_WARN=75;    RAM_CRIT=90      # % RAM
-CPU_WARN=60;    CPU_CRIT=85      # % CPU (charge)
-TEMP_WARN=65;   TEMP_CRIT=80     # °C
+# ── seuils ───────────────────────────────────────────────────────────────────
+DISK_WARN=70; DISK_CRIT=90
+RAM_WARN=75;  RAM_CRIT=90
+CPU_WARN=60;  CPU_CRIT=85
+TEMP_WARN=65; TEMP_CRIT=80
 
 # ── helpers ───────────────────────────────────────────────────────────────────
-color_pct() {
-  local val=$1 warn=$2 crit=$3
-  if   (( val >= crit )); then echo -e "${R}${val}%${RESET}"
-  elif (( val >= warn )); then echo -e "${Y}${val}%${RESET}"
-  else                         echo -e "${G}${val}%${RESET}"
-  fi
+cpct() {
+  # cpct <val> <warn> <crit> — colore un pourcentage
+  local v=$1 w=$2 c=$3
+  (( v >= c )) && echo -e "${R}${v}%${RESET}" && return
+  (( v >= w )) && echo -e "${Y}${v}%${RESET}" && return
+  echo -e "${G}${v}%${RESET}"
 }
 
 bar() {
-  # bar <pct> <width>
-  local pct=$1 width=${2:-20} warn=$3 crit=$4
-  local filled=$(( pct * width / 100 ))
-  local empty=$(( width - filled ))
-  local b=""
-  for ((i=0; i<filled; i++)); do b+="█"; done
-  for ((i=0; i<empty;  i++)); do b+="░"; done
-  if   (( pct >= crit )); then echo -e "${R}${b}${RESET}"
-  elif (( pct >= warn )); then echo -e "${Y}${b}${RESET}"
-  else                         echo -e "${G}${b}${RESET}"
-  fi
+  # bar <pct> <warn> <crit> — barre de 25 chars
+  local pct=$1 w=$2 c=$3 width=25
+  local f=$(( pct * width / 100 )) b=""
+  for ((i=0;i<f;i++));         do b+="█"; done
+  for ((i=f;i<width;i++));     do b+="░"; done
+  (( pct >= c )) && echo -e "${R}${b}${RESET}" && return
+  (( pct >= w )) && echo -e "${Y}${b}${RESET}" && return
+  echo -e "${G}${b}${RESET}"
 }
 
-sep() { echo -e "${DIM}─────────────────────────────────────────────────────${RESET}"; }
+sep() { echo -e "${DIM}──────────────────────────────────────────────────${RESET}"; }
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  COLLECTE DES DONNÉES
+#  COLLECTE
 # ══════════════════════════════════════════════════════════════════════════════
 
-# hostname & OS
-HOSTNAME=$(hostname -s)
-OS=$(grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"' || uname -o)
+HNAME=$(hostname -s)
+OS=$(grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"')
 KERNEL=$(uname -r)
-UPTIME=$(uptime -p 2>/dev/null | sed 's/up //' || uptime | awk -F, '{print $1}' | awk '{print $3,$4}')
+UPTIME=$(uptime -p 2>/dev/null | sed 's/up //' || echo "?")
 
-# ── disque ────────────────────────────────────────────────────────────────────
-DISK_INFO=$(df -h / | awk 'NR==2 {print $3, $2, $5}')
-DISK_USED=$(echo $DISK_INFO | awk '{print $1}')
-DISK_TOTAL=$(echo $DISK_INFO | awk '{print $2}')
-DISK_PCT=$(echo $DISK_INFO | awk '{print $3}' | tr -d '%')
+# Disque
+read DISK_USED DISK_TOTAL DISK_PCT_RAW <<< $(df -h / | awk 'NR==2{print $3,$2,$5}')
+DISK_PCT=${DISK_PCT_RAW//%/}
 
-# Docker logs si présent
-DOCKER_LOGS_SIZE=""
+# Docker logs
+DOCKER_LOGS=""
 if [[ -d /var/lib/docker/containers ]]; then
   SZ=$(du -sh /var/lib/docker/containers/*/*-json.log 2>/dev/null \
-    | awk '{sum+=$1} END {printf "%.0f", sum}')
-  [[ -n "$SZ" && "$SZ" -gt 0 ]] && DOCKER_LOGS_SIZE="${SZ}M"
+    | awk '{gsub(/[^0-9.]/,"",$1); sum+=$1} END{printf "%.0f",sum+0}')
+  [[ "${SZ:-0}" -gt 0 ]] && DOCKER_LOGS="${SZ}M"
 fi
 
 # Journal
 JOURNAL_SIZE=$(journalctl --disk-usage 2>/dev/null \
-  | grep -oP '[\d.]+\s*[KMGT]iB' | head -1 || echo "?")
+  | grep -oE '[0-9.]+ [KMGT]?i?B' | tail -1 || echo "?")
 
-# ── RAM ───────────────────────────────────────────────────────────────────────
-RAM_TOTAL_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
-RAM_FREE_KB=$(grep MemAvailable /proc/meminfo | awk '{print $2}')
-RAM_USED_KB=$(( RAM_TOTAL_KB - RAM_FREE_KB ))
-RAM_PCT=$(( RAM_USED_KB * 100 / RAM_TOTAL_KB ))
-RAM_USED=$(awk "BEGIN {printf \"%.1f\", ${RAM_USED_KB}/1048576}")
-RAM_TOTAL=$(awk "BEGIN {printf \"%.1f\", ${RAM_TOTAL_KB}/1048576}")
+# RAM
+RAM_TOTAL=$(awk '/MemTotal/{print $2}' /proc/meminfo)
+RAM_AVAIL=$(awk '/MemAvailable/{print $2}' /proc/meminfo)
+RAM_USED=$(( RAM_TOTAL - RAM_AVAIL ))
+RAM_PCT=$(( RAM_USED * 100 / RAM_TOTAL ))
+RAM_USED_H=$(awk "BEGIN{printf \"%.1f\",${RAM_USED}/1048576}")
+RAM_TOTAL_H=$(awk "BEGIN{printf \"%.1f\",${RAM_TOTAL}/1048576}")
 
-# ── CPU load ──────────────────────────────────────────────────────────────────
+# CPU
 LOAD=$(cut -d' ' -f1-3 /proc/loadavg)
 LOAD1=$(cut -d' ' -f1 /proc/loadavg)
 CORES=$(nproc)
-CPU_PCT=$(awk "BEGIN {pct=int(${LOAD1}*100/${CORES}); print (pct>100)?100:pct}")
+CPU_PCT=$(awk "BEGIN{p=int(${LOAD1}*100/${CORES});print(p>100)?100:p}")
 
-# ── température ───────────────────────────────────────────────────────────────
-TEMP=""
-TEMP_ALERT=false
+# Température
+TEMP=""; TEMP_INT=0
 if command -v vcgencmd &>/dev/null; then
-  # Raspberry Pi
-  TEMP=$(vcgencmd measure_temp 2>/dev/null | grep -oP '[\d.]+')
+  TEMP=$(vcgencmd measure_temp 2>/dev/null | grep -oE '[0-9.]+')
 elif [[ -f /sys/class/thermal/thermal_zone0/temp ]]; then
-  TEMP=$(awk '{printf "%.1f", $1/1000}' /sys/class/thermal/thermal_zone0/temp)
+  TEMP=$(awk '{printf "%.0f",$1/1000}' /sys/class/thermal/thermal_zone0/temp)
 fi
-if [[ -n "$TEMP" ]]; then
-  TEMP_INT=${TEMP%.*}
-  (( TEMP_INT >= TEMP_CRIT )) && TEMP_ALERT=true
-fi
+[[ -n "$TEMP" ]] && TEMP_INT=${TEMP%.*}
 
-# ── Docker ───────────────────────────────────────────────────────────────────
-DOCKER_UP=0; DOCKER_TOTAL=0; DOCKER_STOPPED=""
+# Docker conteneurs
+DOCKER_UP=0; DOCKER_TOTAL=0; DOCKER_LIST=""
 if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
   DOCKER_TOTAL=$(docker ps -aq 2>/dev/null | wc -l)
   DOCKER_UP=$(docker ps -q 2>/dev/null | wc -l)
-  DOCKER_DOWN=$(( DOCKER_TOTAL - DOCKER_UP ))
-  [[ $DOCKER_DOWN -gt 0 ]] && DOCKER_STOPPED=" ${Y}(${DOCKER_DOWN} arrêté(s))${RESET}"
+  DOCKER_LIST=$(docker ps --format "{{.Names}}|{{.Status}}" 2>/dev/null | head -10)
 fi
 
-# ── processus gourmands ───────────────────────────────────────────────────────
-TOP_CPU=$(ps -eo pid,comm,%cpu --sort=-%cpu 2>/dev/null \
-  | awk 'NR>1 && $3>5 {printf "  PID %-7s %-20s CPU: %s%%\n", $1, $2, $3}' \
-  | head -5)
-TOP_RAM=$(ps -eo pid,comm,%mem --sort=-%mem 2>/dev/null \
-  | awk 'NR>1 && $3>5 {printf "  PID %-7s %-20s RAM: %s%%\n", $1, $2, $3}' \
-  | head -5)
+# Processus gourmands (CPU ou RAM > 5%)
+TOP_PROCS=$(ps -eo comm,%cpu,%mem --sort=-%cpu 2>/dev/null \
+  | awk 'NR>1 && ($2>5 || $3>5) {
+      cpu_col = ($2>5) ? "\033[1;33m" $2"%" "\033[0m" : $2"%"
+      ram_col = ($3>5) ? "\033[1;33m" $3"%" "\033[0m" : $3"%"
+      printf "  %-18s cpu:%-7s ram:%s\n", $1, cpu_col, ram_col
+    }' | head -5)
 
-# ── services en échec ─────────────────────────────────────────────────────────
-FAILED_SERVICES=$(systemctl --failed --no-legend 2>/dev/null \
-  | awk '{print "  ⚠  "$1}' | head -5)
+# Services en échec
+FAILED=$(systemctl list-units --state=failed --no-legend --no-pager 2>/dev/null \
+  | awk '{print $1}' | head -5 | tr '\n' ' ')
 
-# ── mises à jour dispo ───────────────────────────────────────────────────────
+# Mises à jour
 UPDATES=""
-if command -v apt-get &>/dev/null; then
-  COUNT=$(/usr/lib/update-notifier/apt-check 2>&1 | cut -d';' -f1 2>/dev/null || echo "0")
-  [[ "$COUNT" -gt 0 ]] 2>/dev/null && UPDATES="${Y}${COUNT} mise(s) à jour disponible(s)${RESET}"
+if [[ -x /usr/lib/update-notifier/apt-check ]]; then
+  N=$(/usr/lib/update-notifier/apt-check 2>&1 | cut -d';' -f1)
+  [[ "${N:-0}" -gt 0 ]] && UPDATES="${Y}${N} màj dispo${RESET}"
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  AFFICHAGE
 # ══════════════════════════════════════════════════════════════════════════════
-clear
-
-echo -e "${BOLD}${C}"
-echo "  ███████╗███████╗██████╗ ██╗   ██╗███████╗██╗   ██╗██████╗ "
-echo "  ██╔════╝██╔════╝██╔══██╗██║   ██║██╔════╝██║   ██║██╔══██╗"
-echo "  ███████╗█████╗  ██████╔╝██║   ██║█████╗  ██║   ██║██████╔╝"
-echo "  ╚════██║██╔══╝  ██╔══██╗╚██╗ ██╔╝██╔══╝  ██║   ██║██╔══██╗"
-echo "  ███████║███████╗██║  ██║ ╚████╔╝ ███████╗╚██████╔╝██║  ██║"
-echo "  ╚══════╝╚══════╝╚═╝  ╚═╝  ╚═══╝  ╚══════╝ ╚═════╝ ╚═╝  ╚═╝"
-echo -e "${RESET}"
-
-sep
-printf "  ${W}%-15s${RESET} %s\n" "🖥  Hôte"    "${BOLD}${HOSTNAME}${RESET}"
-printf "  ${W}%-15s${RESET} %s\n" "🐧 OS"       "${OS}"
-printf "  ${W}%-15s${RESET} %s\n" "⚙  Kernel"   "${KERNEL}"
-printf "  ${W}%-15s${RESET} %s\n" "⏱  Uptime"   "${UPTIME}"
-[[ -n "$UPDATES" ]] && printf "  ${W}%-15s${RESET} %b\n" "📦 Updates"  "${UPDATES}"
+echo -e "\n${BOLD}${C}  🖥  ${HNAME}${RESET}  ${DIM}│${RESET}  ${OS}  ${DIM}│${RESET}  ${KERNEL}  ${DIM}│${RESET}  ⏱ ${UPTIME}${RESET}"
+[[ -n "$UPDATES" ]] && echo -e "  📦 ${UPDATES}"
 sep
 
-# ── Disque ────────────────────────────────────────────────────────────────────
-echo -e "  ${BOLD}💾 DISQUE${RESET}   ${DISK_USED} / ${DISK_TOTAL}  $(color_pct $DISK_PCT $DISK_WARN $DISK_CRIT)"
-echo -e "  $(bar $DISK_PCT 30 $DISK_WARN $DISK_CRIT)"
-if [[ -n "$DOCKER_LOGS_SIZE" ]]; then
-  echo -e "  ${DIM}└─ logs Docker : ${DOCKER_LOGS_SIZE}  │  journal : ${JOURNAL_SIZE}${RESET}"
-else
-  echo -e "  ${DIM}└─ journal systemd : ${JOURNAL_SIZE}${RESET}"
-fi
+# Disque / RAM / CPU sur 3 lignes compactes
+printf "  ${BOLD}💾${RESET} %-6s %s/%s $(cpct $DISK_PCT $DISK_WARN $DISK_CRIT)  $(bar $DISK_PCT $DISK_WARN $DISK_CRIT)\n" \
+  "DISQUE" "$DISK_USED" "$DISK_TOTAL"
+[[ -n "$DOCKER_LOGS" ]] \
+  && echo -e "  ${DIM}   └─ docker logs: ${DOCKER_LOGS}  │  journal: ${JOURNAL_SIZE}${RESET}" \
+  || echo -e "  ${DIM}   └─ journal: ${JOURNAL_SIZE}${RESET}"
 
-echo ""
+printf "  ${BOLD}🧠${RESET} %-6s %sGo/%sGo $(cpct $RAM_PCT $RAM_WARN $RAM_CRIT)  $(bar $RAM_PCT $RAM_WARN $RAM_CRIT)\n" \
+  "RAM" "$RAM_USED_H" "$RAM_TOTAL_H"
 
-# ── RAM ───────────────────────────────────────────────────────────────────────
-echo -e "  ${BOLD}🧠 RAM${RESET}      ${RAM_USED} Go / ${RAM_TOTAL} Go  $(color_pct $RAM_PCT $RAM_WARN $RAM_CRIT)"
-echo -e "  $(bar $RAM_PCT 30 $RAM_WARN $RAM_CRIT)"
+printf "  ${BOLD}⚡${RESET} %-6s load:%-16s $(cpct $CPU_PCT $CPU_WARN $CPU_CRIT)  $(bar $CPU_PCT $CPU_WARN $CPU_CRIT)\n" \
+  "CPU" "$LOAD"
 
-echo ""
-
-# ── CPU ───────────────────────────────────────────────────────────────────────
-echo -e "  ${BOLD}⚡ CPU${RESET}      Load: ${LOAD}  (${CORES} cœurs)  $(color_pct $CPU_PCT $CPU_WARN $CPU_CRIT)"
-echo -e "  $(bar $CPU_PCT 30 $CPU_WARN $CPU_CRIT)"
 if [[ -n "$TEMP" ]]; then
-  if $TEMP_ALERT; then
-    echo -e "  ${DIM}└─ Température : ${R}${TEMP}°C ⚠ SURCHAUFFE${RESET}"
-  elif (( TEMP_INT >= TEMP_WARN )); then
-    echo -e "  ${DIM}└─ Température : ${Y}${TEMP}°C${RESET}"
-  else
-    echo -e "  ${DIM}└─ Température : ${G}${TEMP}°C${RESET}"
+  if   (( TEMP_INT >= TEMP_CRIT )); then TCOL="${R}${TEMP}°C ⚠${RESET}"
+  elif (( TEMP_INT >= TEMP_WARN )); then TCOL="${Y}${TEMP}°C${RESET}"
+  else                                    TCOL="${G}${TEMP}°C${RESET}"
   fi
+  echo -e "  ${DIM}   └─ temp: ${TCOL}${RESET}"
 fi
 
-echo ""
 sep
 
-# ── Docker ────────────────────────────────────────────────────────────────────
+# Docker
 if [[ $DOCKER_TOTAL -gt 0 ]]; then
-  echo -e "  ${BOLD}🐳 Docker${RESET}   ${G}${DOCKER_UP} actif(s)${RESET}${DOCKER_STOPPED} / ${DOCKER_TOTAL} total"
-  docker ps --format "  ${DIM}├─ {{.Names}} ({{.Status}})${RESET}" 2>/dev/null | head -10
+  DOCKER_DOWN=$(( DOCKER_TOTAL - DOCKER_UP ))
+  printf "  ${BOLD}🐳${RESET} Docker  ${G}%d actif(s)${RESET}" "$DOCKER_UP"
+  [[ $DOCKER_DOWN -gt 0 ]] && printf "  ${Y}%d arrêté(s)${RESET}" "$DOCKER_DOWN"
   echo ""
+  while IFS='|' read -r name status; do
+    # Truncate status to keep it short
+    short_status=$(echo "$status" | sed 's/Up //;s/ (.*//' | cut -c1-20)
+    printf "  ${DIM}  %-22s %s${RESET}\n" "$name" "$short_status"
+  done <<< "$DOCKER_LIST"
+  sep
 fi
 
-# ── Alertes ───────────────────────────────────────────────────────────────────
+# Alertes
 ALERTS=false
-
-if [[ -n "$TOP_CPU" ]]; then
-  echo -e "  ${BOLD}${Y}⚠  Processus gourmands en CPU${RESET}"
-  echo -e "${TOP_CPU}"
-  echo ""
+if [[ -n "$TOP_PROCS" ]]; then
+  echo -e "  ${Y}⚠ Processus actifs${RESET}"
+  echo -e "$TOP_PROCS"
   ALERTS=true
 fi
-
-if [[ -n "$TOP_RAM" ]]; then
-  echo -e "  ${BOLD}${Y}⚠  Processus gourmands en RAM${RESET}"
-  echo -e "${TOP_RAM}"
-  echo ""
+if [[ -n "$FAILED" ]]; then
+  echo -e "  ${R}✖ Services en échec :${RESET} ${FAILED}"
   ALERTS=true
 fi
-
-if [[ -n "$FAILED_SERVICES" ]]; then
-  echo -e "  ${BOLD}${R}✖  Services en échec${RESET}"
-  echo -e "${FAILED_SERVICES}"
-  echo ""
-  ALERTS=true
-fi
-
-$ALERTS || echo -e "  ${G}✔  Aucune alerte — tout semble nominal${RESET}\n"
+$ALERTS || echo -e "  ${G}✔ Nominal${RESET}"
 
 sep
-echo -e "  ${DIM}Connecté le $(date '+%d/%m/%Y à %H:%M:%S') · linux-cleanup.sh disponible${RESET}"
-sep
-echo ""
+echo -e "  ${DIM}$(date '+%d/%m/%Y %H:%M')  ·  run: linux-cleanup.sh${RESET}\n"
