@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 # linux-cleanup.sh — Purge logs Docker & système, limites permanentes, MOTD SSH
-# Testé sur : Debian / Ubuntu / Raspberry Pi OS / Armbian
+# Testé sur : Debian / Ubuntu / Raspberry Pi OS / Armbian / Proxmox
 #
 # GitHub : https://github.com/Eucliwood090/Linux-cleanup
 # =============================================================================
@@ -24,7 +24,6 @@ DOCKER_LOG_MAX_SIZE="50m"
 DOCKER_LOG_MAX_FILES="3"
 JOURNAL_MAX_USE="500M"
 JOURNAL_MAX_RETENTION="2weeks"
-MOTD_URL="https://raw.githubusercontent.com/Eucliwood090/Linux-cleanup/main/motd-dynamic.sh"
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 run() {
@@ -67,16 +66,18 @@ echo -e "  ${BOLD}Que souhaitez-vous faire ?${RESET}"
 echo ""
 echo -e "  ${GREEN}1)${RESET} ${BOLD}Mode automatique${RESET}   — Nettoie tout sans poser de questions"
 echo -e "  ${CYAN}2)${RESET} ${BOLD}Mode manuel${RESET}        — Confirme chaque étape"
-echo -e "  ${YELLOW}3)${RESET} ${BOLD}Installer le MOTD${RESET}  — Tableau de bord à chaque connexion SSH"
+echo -e "  ${YELLOW}3)${RESET} ${BOLD}MOTD Standard${RESET}      — Installer le tableau de bord Linux"
+echo -e "  ${YELLOW}4)${RESET} ${BOLD}MOTD Proxmox${RESET}       — Installer le tableau de bord Proxmox VE"
 echo -e "  ${RED}q)${RESET} Quitter"
 echo ""
-echo -en "  Votre choix [1/2/3/q] : "
+echo -en "  Votre choix [1/2/3/4/q] : "
 read -r CHOICE
 
 case "$CHOICE" in
   1) MODE="auto" ;;
   2) MODE="manuel" ;;
-  3) MODE="motd" ;;
+  3) MODE="motd_std" ;;
+  4) MODE="motd_pve" ;;
   q|Q) echo ""; info "Au revoir."; exit 0 ;;
   *) error "Choix invalide."; exit 1 ;;
 esac
@@ -88,7 +89,6 @@ DRY_RUN=false
 # ══════════════════════════════════════════════════════════════════════════════
 
 ask() {
-  # En mode auto : toujours oui. En mode manuel : demande.
   local question="$1"
   if [[ "$MODE" == "auto" ]]; then
     echo -e "${CYAN}[AUTO]${RESET}  $question → oui"
@@ -177,7 +177,6 @@ do_varlog() {
     success "Archives supprimées."
   fi
 
-  # daemon.json Docker
   if [[ "${DOCKER_AVAILABLE:-false}" == true ]]; then
     DAEMON_JSON="/etc/docker/daemon.json"
     if [[ -f "$DAEMON_JSON" ]] && grep -q "max-size" "$DAEMON_JSON" 2>/dev/null; then
@@ -207,61 +206,60 @@ EOF
   fi
 }
 
-# ── MOTD ──────────────────────────────────────────────────────────────────────
-do_motd() {
-  header "Installation du MOTD dynamique"
-  MOTD_DEST="/etc/profile.d/motd-dynamic.sh"
-  MOTD_SRC="$(dirname "$(realpath "$0")")/motd-dynamic.sh"
-
-  if [[ -f "$MOTD_DEST" ]]; then
-    info "MOTD déjà installé dans $MOTD_DEST."
-    echo -en "${BOLD}Réinstaller / mettre à jour ? [o/N] ${RESET}"
-    read -r rep
-    [[ "${rep:-N}" =~ ^[OoYy]$ ]] || return
+# ── MOTD & Wrapper ────────────────────────────────────────────────────────────
+install_motd() {
+  local target="$1"
+  local url_script=""
+  local dest_script=""
+  
+  if [[ "$target" == "std" ]]; then
+    header "Installation du MOTD Linux Standard"
+    url_script="https://raw.githubusercontent.com/Eucliwood090/Linux-cleanup/main/motd-dynamic.sh"
+    dest_script="/etc/profile.d/motd-dynamic.sh"
+  elif [[ "$target" == "pve" ]]; then
+    header "Installation du MOTD Proxmox VE"
+    url_script="https://raw.githubusercontent.com/Eucliwood090/Linux-cleanup/main/motd-proxmox.sh"
+    dest_script="/etc/profile.d/motd-proxmox.sh"
   fi
 
-  # Cherche le fichier localement, sinon télécharge
-  if [[ ! -f "$MOTD_SRC" ]]; then
-    info "motd-dynamic.sh non trouvé localement → téléchargement depuis GitHub..."
-    TMP_MOTD=$(mktemp /tmp/motd-dynamic-XXXXXX.sh)
-    DL_OK=false
-    if command -v curl &>/dev/null; then
-      curl -fsSL "$MOTD_URL" -o "$TMP_MOTD" && DL_OK=true || true
-    fi
-    if [[ "$DL_OK" == false ]] && command -v wget &>/dev/null; then
-      wget -q "$MOTD_URL" -O "$TMP_MOTD" && DL_OK=true || true
-    fi
-    if [[ "$DL_OK" == false ]]; then
-      error "Impossible de télécharger le MOTD."
-      error "Vérifie ta connexion ou télécharge manuellement :"
-      error "  $MOTD_URL"
-      rm -f "$TMP_MOTD"
-      return
-    fi
-    # Vérification basique : le fichier doit contenir du bash
-    if ! grep -q "#!/" "$TMP_MOTD" 2>/dev/null; then
-      error "Le fichier téléchargé semble invalide (repo GitHub vide ?)."
-      rm -f "$TMP_MOTD"
-      return
-    fi
-    MOTD_SRC="$TMP_MOTD"
-    success "Téléchargement réussi."
+  # 1. Téléchargement du MOTD choisi
+  TMP_MOTD=$(mktemp)
+  info "Récupération du script MOTD depuis GitHub..."
+  if curl -fsSL "$url_script" -o "$TMP_MOTD" || wget -q "$url_script" -O "$TMP_MOTD"; then
+    mv "$TMP_MOTD" "$dest_script"
+    chmod +x "$dest_script"
+    success "MOTD installé dans $dest_script"
+  else
+    error "Impossible de télécharger le MOTD."
+    error "Vérifie ta connexion ou le chemin GitHub : $url_script"
+    rm -f "$TMP_MOTD"
+    return
   fi
 
-  cp "$MOTD_SRC" "$MOTD_DEST"
-  chmod +x "$MOTD_DEST"
-  [[ "$MOTD_SRC" == /tmp/* ]] && rm -f "$MOTD_SRC"
-
-  # Désactiver l'ancien MOTD statique
+  # 2. Désactivation du MOTD natif si présent
   if [[ -f /etc/motd ]] && [[ -s /etc/motd ]]; then
     mv /etc/motd /etc/motd.bak
     info "Ancien /etc/motd sauvegardé dans /etc/motd.bak"
   fi
 
-  success "MOTD installé avec succès !"
+  # 3. Installation du wrapper 'motd'
+  WRAPPER_URL="https://raw.githubusercontent.com/Eucliwood090/Linux-cleanup/main/motd-wrapper.sh"
+  WRAPPER_DEST="/usr/local/bin/motd"
+  
+  info "Installation de la commande 'motd'..."
+  TMP_WRAPPER=$(mktemp)
+  if curl -fsSL "$WRAPPER_URL" -o "$TMP_WRAPPER" || wget -q "$WRAPPER_URL" -O "$TMP_WRAPPER"; then
+    mv "$TMP_WRAPPER" "$WRAPPER_DEST"
+    chmod +x "$WRAPPER_DEST"
+    success "Commande 'motd' installée avec succès."
+  else
+    warn "Impossible de télécharger le wrapper. La commande 'motd' ne sera pas disponible."
+    rm -f "$TMP_WRAPPER"
+  fi
+
   echo ""
-  info "Tester maintenant :"
-  echo "    bash $MOTD_DEST"
+  info "Test de la commande à présent :"
+  motd
 }
 
 # ── Résumé final ──────────────────────────────────────────────────────────────
@@ -275,8 +273,6 @@ do_summary() {
   echo -e "  ${BOLD}Prochaines étapes recommandées :${RESET}"
   echo "  • Recréer les conteneurs Docker :"
   echo "      docker compose down && docker compose up -d"
-  echo "  • Tester le MOTD SSH :"
-  echo "      bash /etc/profile.d/motd-dynamic.sh"
   echo "  • Planifier ce script mensuellement :"
   echo "      echo '0 3 1 * * root bash /usr/local/sbin/linux-cleanup.sh' \\"
   echo "        | sudo tee /etc/cron.d/linux-cleanup"
@@ -295,7 +291,10 @@ case "$MODE" in
     do_varlog
     do_summary
     ;;
-  motd)
-    do_motd
+  motd_std)
+    install_motd "std"
+    ;;
+  motd_pve)
+    install_motd "pve"
     ;;
 esac
