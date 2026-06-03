@@ -166,11 +166,32 @@ EOF
   fi
 fi
 
-# ── 3b. journald ──────────────────────────────────────────────────────────────
+# ── 3b. journald — purge + limites ───────────────────────────────────────────
 JOURNALD_CONF="/etc/systemd/journald.conf.d/99-size-limit.conf"
-info "Journald disk usage: $(journalctl --disk-usage 2>/dev/null | tail -1)"
 
-if ask "\nLimit journald to ${JOURNAL_MAX_USE} / ${JOURNAL_MAX_RETENTION}?"; then
+JOURNAL_DISK=$(journalctl --disk-usage 2>/dev/null | tail -1)
+info "Journald disk usage : $JOURNAL_DISK"
+info "Détail /var/log/journal :"
+du -sh /var/log/journal/* 2>/dev/null | sort -rh | head -10 \
+  || info "(répertoire vide ou inexistant)"
+
+# -- purge immédiate --
+if ask "\nPurger le journal maintenant (garder ${JOURNAL_MAX_RETENTION} / ${JOURNAL_MAX_USE}) ?"; then
+  run "journalctl --vacuum-time=${JOURNAL_MAX_RETENTION}"
+  run "journalctl --vacuum-size=${JOURNAL_MAX_USE}"
+  success "Journal purgé."
+  info "Espace libéré :"
+  journalctl --disk-usage 2>/dev/null | tail -1 || true
+fi
+
+# -- limites permanentes --
+NEED_JOURNAL_CONF=true
+if [[ -f "$JOURNALD_CONF" ]] && grep -q "SystemMaxUse" "$JOURNALD_CONF" 2>/dev/null; then
+  info "$JOURNALD_CONF déjà configuré — skipping."
+  NEED_JOURNAL_CONF=false
+fi
+
+if $NEED_JOURNAL_CONF && ask "\nAppliquer les limites permanentes journald (${JOURNAL_MAX_USE} max) ?"; then
   run "mkdir -p /etc/systemd/journald.conf.d"
   run "cat > $JOURNALD_CONF <<EOF
 [Journal]
@@ -179,8 +200,7 @@ SystemMaxFileSize=50M
 MaxRetentionSec=${JOURNAL_MAX_RETENTION}
 EOF"
   run "systemctl restart systemd-journald"
-  run "journalctl --vacuum-time=${JOURNAL_MAX_RETENTION} --vacuum-size=${JOURNAL_MAX_USE}"
-  success "Journald limited and vacuumed."
+  success "Journald limité à ${JOURNAL_MAX_USE} / ${JOURNAL_MAX_RETENTION}."
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
