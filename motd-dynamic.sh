@@ -44,17 +44,17 @@ DISK_USED=$(df -h / | awk 'NR==2{print $3}')
 DISK_TOTAL=$(df -h / | awk 'NR==2{print $2}')
 DISK_PCT=$(df / | awk 'NR==2{gsub(/%/,"",$5); print $5}')
 
-# Docker logs
+# Docker logs (CORRIGÉ : du -sm pour forcer les Mégaoctets)
 DOCKER_LOGS=""
 if [[ -d /var/lib/docker/containers ]]; then
-  SZ=$(du -sh /var/lib/docker/containers/*/*-json.log 2>/dev/null \
-    | awk '{sum+=$1} END{printf "%.0f",sum+0}')
-  [[ "${SZ:-0}" -gt 0 ]] && DOCKER_LOGS="${SZ}M"
+  SZ=$(du -sm /var/lib/docker/containers/*/*-json.log 2>/dev/null \
+    | awk '{sum+=$1} END{print sum}')
+  [[ -n "$SZ" && "$SZ" -gt 0 ]] && DOCKER_LOGS="${SZ}M"
 fi
 
-# Journal
+# Journal (CORRIGÉ : Regex plus permissive)
 JOURNAL_SIZE=$(journalctl --disk-usage 2>/dev/null \
-  | grep -oE '[0-9.]+ [KMGT]?i?B' | tail -1 || echo "?")
+  | grep -oE '[0-9]+(\.[0-9]+)?[ ]*[KMG]i?B?' | tail -1 || echo "?")
 
 # RAM
 RAM_TOTAL=$(awk '/MemTotal/{print $2}'    /proc/meminfo)
@@ -87,13 +87,15 @@ if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
   DOCKER_LIST=$(docker ps --format "{{.Names}}|{{.Status}}" 2>/dev/null | head -10)
 fi
 
-# Processus gourmands CPU ou RAM > 5%
-TOP_PROCS=$(ps -eo comm,%cpu,%mem --sort=-%cpu 2>/dev/null \
-  | awk 'NR>1 && ($2>5||$3>5){
-      printf "  %-18s cpu:%-7s ram:%s\n",$1,$2"%",$3"%"
+# Processus gourmands CPU ou RAM > 5% (CORRIGÉ : colonnes inversées pour éviter les bugs d'espaces)
+TOP_PROCS=$(ps -eo %cpu,%mem,comm --sort=-%cpu 2>/dev/null \
+  | awk 'NR>1 && ($1>5||$2>5){
+      cmd=""; for(i=3;i<=NF;i++) cmd=cmd $i " ";
+      sub(/ $/, "", cmd);
+      printf "  %-18s cpu:%-7s ram:%s\n", substr(cmd,1,18), $1"%", $2"%"
     }' | head -5)
 
-# Services en échec — on filtre les lignes vides et le wildcard *
+# Services en échec
 FAILED=$(systemctl list-units --state=failed --no-legend --no-pager 2>/dev/null \
   | awk '{print $1}' \
   | grep -v '^\*$' \
