@@ -49,58 +49,72 @@ check_dependencies() {
   if ! command -v curl &>/dev/null; then
     echo ""
     warn "La commande 'curl' est introuvable."
-    echo -en "  ${BOLD}Voulez-vous l'installer maintenant (apt-get install curl) ? [O/n] ${RESET}"
-    read -r rep
-    if [[ "${rep:-O}" =~ ^[OoYy]$ ]]; then
-      info "Installation de curl en cours..."
+    # Si on est en mode auto, on installe sans demander (pour les cron)
+    if [[ "$MODE" == "auto" ]]; then
+      info "Installation automatique de curl..."
       apt-get update -qq && apt-get install -y curl >/dev/null
       success "curl a été installé avec succès."
     else
-      error "curl est requis pour télécharger les composants. Opération annulée."
-      exit 1
+      echo -en "  ${BOLD}Voulez-vous l'installer maintenant (apt-get install curl) ? [O/n] ${RESET}"
+      read -r rep
+      if [[ "${rep:-O}" =~ ^[OoYy]$ ]]; then
+        info "Installation de curl en cours..."
+        apt-get update -qq && apt-get install -y curl >/dev/null
+        success "curl a été installé avec succès."
+      else
+        error "curl est requis pour télécharger les composants. Opération annulée."
+        exit 1
+      fi
     fi
   fi
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  MENU PRINCIPAL
+#  MENU PRINCIPAL ET ARGUMENTS CLI
 # ══════════════════════════════════════════════════════════════════════════════
 require_root
-check_dependencies
 
-echo -e "\n${BOLD}${CYAN}"
-echo "  ██╗     ██╗███╗   ██╗██╗   ██╗██╗  ██╗"
-echo "  ██║     ██║████╗  ██║██║   ██║╚██╗██╔╝"
-echo "  ██║     ██║██╔██╗ ██║██║   ██║ ╚███╔╝ "
-echo "  ██║     ██║██║╚██╗██║██║   ██║ ██╔██╗ "
-echo "  ███████╗██║██║ ╚████║╚██████╔╝██╔╝ ██╗"
-echo "  ╚══════╝╚═╝╚═╝  ╚═══╝ ╚═════╝ ╚═╝  ╚═╝  CLEANUP${RESET}"
-echo ""
-sep
-echo -e "  Disque actuel : $(disk_usage)"
-sep
-echo ""
-echo -e "  ${BOLD}Que souhaitez-vous faire ?${RESET}"
-echo ""
-echo -e "  ${GREEN}1)${RESET} ${BOLD}Mode automatique${RESET}   — Nettoie tout sans poser de questions"
-echo -e "  ${CYAN}2)${RESET} ${BOLD}Mode manuel${RESET}        — Confirme chaque étape"
-echo -e "  ${YELLOW}3)${RESET} ${BOLD}MOTD Standard${RESET}      — Installer le tableau de bord Linux"
-echo -e "  ${YELLOW}4)${RESET} ${BOLD}MOTD Proxmox${RESET}       — Installer le tableau de bord Proxmox VE"
-echo -e "  ${RED}q)${RESET} Quitter"
-echo ""
-echo -en "  Votre choix [1/2/3/4/q] : "
-read -r CHOICE
+# Si un argument est passé, on bypass le menu visuel
+CHOICE="${1:-}"
+
+if [[ -z "$CHOICE" ]]; then
+  echo -e "\n${BOLD}${CYAN}"
+  echo "  ██╗     ██╗███╗   ██╗██╗   ██╗██╗  ██╗"
+  echo "  ██║     ██║████╗  ██║██║   ██║╚██╗██╔╝"
+  echo "  ██║     ██║██╔██╗ ██║██║   ██║ ╚███╔╝ "
+  echo "  ██║     ██║██║╚██╗██║██║   ██║ ██╔██╗ "
+  echo "  ███████╗██║██║ ╚████║╚██████╔╝██╔╝ ██╗"
+  echo "  ╚══════╝╚═╝╚═╝  ╚═══╝ ╚═════╝ ╚═╝  ╚═╝  CLEANUP${RESET}"
+  echo ""
+  sep
+  echo -e "  Disque actuel : $(disk_usage)"
+  sep
+  echo ""
+  echo -e "  ${BOLD}Que souhaitez-vous faire ?${RESET}"
+  echo ""
+  echo -e "  ${GREEN}1)${RESET} ${BOLD}Mode automatique${RESET}   — Nettoie tout sans poser de questions"
+  echo -e "  ${CYAN}2)${RESET} ${BOLD}Mode manuel${RESET}        — Confirme chaque étape"
+  echo -e "  ${YELLOW}3)${RESET} ${BOLD}MOTD Standard${RESET}      — Installer le tableau de bord Linux"
+  echo -e "  ${YELLOW}4)${RESET} ${BOLD}MOTD Proxmox${RESET}       — Installer le tableau de bord Proxmox VE"
+  echo -e "  ${RED}q)${RESET} Quitter"
+  echo ""
+  echo -en "  Votre choix [1/2/3/4/q] : "
+  read -r CHOICE
+else
+  info "Exécution directe avec l'argument : ${BOLD}$CHOICE${RESET}"
+fi
 
 case "$CHOICE" in
-  1) MODE="auto" ;;
-  2) MODE="manuel" ;;
-  3) MODE="motd_std" ;;
-  4) MODE="motd_pve" ;;
+  1|auto) MODE="auto" ;;
+  2|manuel) MODE="manuel" ;;
+  3|std) MODE="motd_std" ;;
+  4|pve) MODE="motd_pve" ;;
   q|Q) echo ""; info "Au revoir."; exit 0 ;;
-  *) error "Choix invalide."; exit 1 ;;
+  *) error "Choix invalide. Options acceptées : 1 (auto), 2 (manuel), 3 (std), 4 (pve)."; exit 1 ;;
 esac
 
 DRY_RUN=false
+check_dependencies
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  FONCTIONS DE NETTOYAGE
@@ -243,7 +257,7 @@ install_motd() {
   # 1. Téléchargement du MOTD choisi
   TMP_MOTD=$(mktemp)
   info "Récupération du script MOTD depuis GitHub..."
-  if curl -fsSL "$url_script" -o "$TMP_MOTD"; then
+  if curl -fsSL "$url_script" -o "$TMP_MOTD" || wget -q "$url_script" -O "$TMP_MOTD"; then
     mv "$TMP_MOTD" "$dest_script"
     chmod +x "$dest_script"
     success "MOTD installé dans $dest_script"
@@ -266,7 +280,7 @@ install_motd() {
   
   info "Installation de la commande 'motd'..."
   TMP_WRAPPER=$(mktemp)
-  if curl -fsSL "$WRAPPER_URL" -o "$TMP_WRAPPER"; then
+  if curl -fsSL "$WRAPPER_URL" -o "$TMP_WRAPPER" || wget -q "$WRAPPER_URL" -O "$TMP_WRAPPER"; then
     mv "$TMP_WRAPPER" "$WRAPPER_DEST"
     chmod +x "$WRAPPER_DEST"
     success "Commande 'motd' installée avec succès."
@@ -292,7 +306,7 @@ do_summary() {
   echo "  • Recréer les conteneurs Docker :"
   echo "      docker compose down && docker compose up -d"
   echo "  • Planifier ce script mensuellement :"
-  echo "      echo '0 3 1 * * root bash /usr/local/sbin/linux-cleanup.sh' \\"
+  echo "      echo '0 3 1 * * root bash /usr/local/sbin/linux-cleanup.sh 1' \\"
   echo "        | sudo tee /etc/cron.d/linux-cleanup"
   echo ""
 }
