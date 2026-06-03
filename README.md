@@ -35,7 +35,7 @@ Ce script nettoie tout ça en une commande, puis configure le système pour que 
 ## 🚀 Installation rapide
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/YOURNAME/linux-cleanup/main/linux-cleanup.sh \
+curl -fsSL https://raw.githubusercontent.com/Eucliwood090/linux-cleanup/main/linux-cleanup.sh \
   -o linux-cleanup.sh
 chmod +x linux-cleanup.sh
 sudo bash linux-cleanup.sh
@@ -44,7 +44,7 @@ sudo bash linux-cleanup.sh
 Ou en clonant le repo :
 
 ```bash
-git clone https://github.com/YOURNAME/linux-cleanup.git
+git clone https://github.com/Eucliwood090/linux-cleanup.git
 cd linux-cleanup
 sudo bash linux-cleanup.sh
 ```
