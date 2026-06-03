@@ -1,135 +1,194 @@
 #!/usr/bin/env bash
 # =============================================================================
-# linux-cleanup.sh
-# Purge Docker logs & system logs, then enforce size limits going forward.
-# Tested on: Debian / Ubuntu / Raspberry Pi OS
+# linux-cleanup.sh — Purge logs Docker & système, limites permanentes, MOTD SSH
+# Testé sur : Debian / Ubuntu / Raspberry Pi OS / Armbian
 #
-# Usage:
-#   sudo bash linux-cleanup.sh          # interactive (recommended first run)
-#   sudo bash linux-cleanup.sh --dry-run
-#   sudo bash linux-cleanup.sh --auto   # non-interactive (cron / CI)
-#
-# GitHub: https://github.com/YOURNAME/linux-cleanup
+# GitHub : https://github.com/Eucliwood090/Linux-cleanup
 # =============================================================================
 
 set -euo pipefail
 
-# ── colours ──────────────────────────────────────────────────────────────────
+# ── couleurs ──────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; YELLOW='\033[1;33m'; GREEN='\033[0;32m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
 
 info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
 success() { echo -e "${GREEN}[OK]${RESET}    $*"; }
 warn()    { echo -e "${YELLOW}[WARN]${RESET}  $*"; }
-error()   { echo -e "${RED}[ERROR]${RESET} $*" >&2; }
+error()   { echo -e "${RED}[ERREUR]${RESET} $*" >&2; }
 header()  { echo -e "\n${BOLD}${CYAN}══ $* ══${RESET}"; }
+sep()     { echo -e "${CYAN}─────────────────────────────────────────────${RESET}"; }
 
-# ── defaults ─────────────────────────────────────────────────────────────────
-DRY_RUN=false
-AUTO=false
-
-DOCKER_LOG_MAX_SIZE="50m"   # max size per log file
-DOCKER_LOG_MAX_FILES="3"    # number of rotated files kept
-JOURNAL_MAX_USE="500M"      # total journald disk quota
+# ── paramètres ────────────────────────────────────────────────────────────────
+DOCKER_LOG_MAX_SIZE="50m"
+DOCKER_LOG_MAX_FILES="3"
+JOURNAL_MAX_USE="500M"
 JOURNAL_MAX_RETENTION="2weeks"
-
-# ── argument parsing ──────────────────────────────────────────────────────────
-for arg in "$@"; do
-  case $arg in
-    --dry-run) DRY_RUN=true ;;
-    --auto)    AUTO=true ;;
-    --help|-h)
-      echo "Usage: sudo bash $0 [--dry-run] [--auto]"
-      echo "  --dry-run   Show what would be done, change nothing"
-      echo "  --auto      Non-interactive mode (no prompts)"
-      exit 0 ;;
-    *) error "Unknown argument: $arg"; exit 1 ;;
-  esac
-done
+MOTD_URL="https://raw.githubusercontent.com/Eucliwood090/Linux-cleanup/main/motd-dynamic.sh"
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 run() {
-  if $DRY_RUN; then
+  if [[ "${DRY_RUN:-false}" == true ]]; then
     echo -e "  ${YELLOW}[DRY-RUN]${RESET} $*"
   else
     eval "$@"
   fi
 }
 
-ask() {
-  # ask <question> → returns 0 (yes) or 1 (no)
-  local question="$1"
-  if $AUTO; then return 0; fi
-  echo -en "${BOLD}$question [Y/n] ${RESET}"
-  read -r reply
-  [[ "${reply:-Y}" =~ ^[Yy]$ ]]
+disk_usage() {
+  df -h / | awk 'NR==2 {print $3 " utilisés / " $2 " total (" $5 " plein)"}'
 }
 
 require_root() {
   if [[ $EUID -ne 0 ]]; then
-    error "This script must be run as root (use sudo)."
+    error "Ce script doit être lancé en root (sudo)."
     exit 1
   fi
 }
 
-disk_usage_before() {
-  df -h / | awk 'NR==2 {print $3 " used / " $2 " total (" $5 " full)"}'
-}
-
-# ── checks ────────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+#  MENU PRINCIPAL
+# ══════════════════════════════════════════════════════════════════════════════
 require_root
 
-$DRY_RUN && warn "DRY-RUN mode — nothing will be modified."
+echo -e "\n${BOLD}${CYAN}"
+echo "  ██╗     ██╗███╗   ██╗██╗   ██╗██╗  ██╗"
+echo "  ██║     ██║████╗  ██║██║   ██║╚██╗██╔╝"
+echo "  ██║     ██║██╔██╗ ██║██║   ██║ ╚███╔╝ "
+echo "  ██║     ██║██║╚██╗██║██║   ██║ ██╔██╗ "
+echo "  ███████╗██║██║ ╚████║╚██████╔╝██╔╝ ██╗"
+echo "  ╚══════╝╚═╝╚═╝  ╚═══╝ ╚═════╝ ╚═╝  ╚═╝  CLEANUP${RESET}"
+echo ""
+sep
+echo -e "  Disque actuel : $(disk_usage)"
+sep
+echo ""
+echo -e "  ${BOLD}Que souhaitez-vous faire ?${RESET}"
+echo ""
+echo -e "  ${GREEN}1)${RESET} ${BOLD}Mode automatique${RESET}   — Nettoie tout sans poser de questions"
+echo -e "  ${CYAN}2)${RESET} ${BOLD}Mode manuel${RESET}        — Confirme chaque étape"
+echo -e "  ${YELLOW}3)${RESET} ${BOLD}Installer le MOTD${RESET}  — Tableau de bord à chaque connexion SSH"
+echo -e "  ${RED}q)${RESET} Quitter"
+echo ""
+echo -en "  Votre choix [1/2/3/q] : "
+read -r CHOICE
 
-echo -e "\n${BOLD}╔══════════════════════════════════════════╗"
-echo -e   "║       linux-cleanup.sh                   ║"
-echo -e   "╚══════════════════════════════════════════╝${RESET}"
-echo -e "Disk before: $(disk_usage_before)\n"
+case "$CHOICE" in
+  1) MODE="auto" ;;
+  2) MODE="manuel" ;;
+  3) MODE="motd" ;;
+  q|Q) echo ""; info "Au revoir."; exit 0 ;;
+  *) error "Choix invalide."; exit 1 ;;
+esac
+
+DRY_RUN=false
 
 # ══════════════════════════════════════════════════════════════════════════════
-header "1/4 · Docker container logs (truncate)"
+#  FONCTIONS DE NETTOYAGE
 # ══════════════════════════════════════════════════════════════════════════════
 
-if ! command -v docker &>/dev/null; then
-  warn "Docker not found — skipping Docker steps."
-  DOCKER_AVAILABLE=false
-else
+ask() {
+  # En mode auto : toujours oui. En mode manuel : demande.
+  local question="$1"
+  if [[ "$MODE" == "auto" ]]; then
+    echo -e "${CYAN}[AUTO]${RESET}  $question → oui"
+    return 0
+  fi
+  echo -en "${BOLD}$question [O/n] ${RESET}"
+  read -r rep
+  [[ "${rep:-O}" =~ ^[OoYy]$ ]]
+}
+
+# ── Docker logs ───────────────────────────────────────────────────────────────
+do_docker_logs() {
+  header "1/4 · Logs des conteneurs Docker"
+  if ! command -v docker &>/dev/null; then
+    warn "Docker introuvable — étape ignorée."
+    DOCKER_AVAILABLE=false
+    return
+  fi
   DOCKER_AVAILABLE=true
-  LOG_SIZE=$(du -sh /var/lib/docker/containers/*/*-json.log 2>/dev/null \
-    | awk '{sum+=$1} END {print sum+0}' || echo "0")
-  info "Current Docker log usage:"
+  info "Taille actuelle des logs Docker :"
   du -sh /var/lib/docker/containers/*/*-json.log 2>/dev/null \
-    | sort -rh | head -10 || info "(no log files found)"
+    | sort -rh | head -10 || info "(aucun fichier log trouvé)"
 
-  if ask "\nTruncate all Docker container log files now?"; then
-    # truncate is safe: keeps the file handle open for the running container
-    run "truncate -s 0 /var/lib/docker/containers/*/*-json.log"
-    success "Docker logs truncated."
+  if ask "\nTronquer tous les logs Docker maintenant ?"; then
+    run "truncate -s 0 /var/lib/docker/containers/*/*-json.log 2>/dev/null || true"
+    success "Logs Docker vidés."
   fi
-fi
+}
 
-# ══════════════════════════════════════════════════════════════════════════════
-header "2/4 · Docker system prune (stopped containers, dangling images)"
-# ══════════════════════════════════════════════════════════════════════════════
-
-if $DOCKER_AVAILABLE; then
-  info "Disk used by Docker objects:"
+# ── Docker prune ──────────────────────────────────────────────────────────────
+do_docker_prune() {
+  header "2/4 · Docker system prune"
+  if [[ "${DOCKER_AVAILABLE:-false}" != true ]]; then return; fi
+  info "Espace utilisé par Docker :"
   docker system df 2>/dev/null || true
-
-  if ask "\nRun 'docker system prune -f' (keeps running containers & named volumes)?"; then
+  if ask "\nSupprimer conteneurs arrêtés et images orphelines ?"; then
     run "docker system prune -f"
-    success "Docker pruned."
+    success "Docker purgé."
   fi
-fi
+}
 
-# ══════════════════════════════════════════════════════════════════════════════
-header "3/4 · Apply log-size limits going forward"
-# ══════════════════════════════════════════════════════════════════════════════
+# ── Journald ──────────────────────────────────────────────────────────────────
+do_journald() {
+  header "3/4 · Journal systemd"
+  JOURNALD_CONF="/etc/systemd/journald.conf.d/99-size-limit.conf"
+  info "Espace utilisé par journald : $(journalctl --disk-usage 2>/dev/null | tail -1)"
+  info "Détail /var/log/journal :"
+  du -sh /var/log/journal/* 2>/dev/null | sort -rh | head -10 \
+    || info "(répertoire vide)"
 
-# ── 3a. Docker daemon.json ────────────────────────────────────────────────────
-if $DOCKER_AVAILABLE; then
-  DAEMON_JSON="/etc/docker/daemon.json"
-  DESIRED_CONF=$(cat <<EOF
+  if ask "\nPurger le journal (garder ${JOURNAL_MAX_RETENTION} / max ${JOURNAL_MAX_USE}) ?"; then
+    run "journalctl --vacuum-time=${JOURNAL_MAX_RETENTION}"
+    run "journalctl --vacuum-size=${JOURNAL_MAX_USE}"
+    success "Journal purgé."
+    info "Après purge : $(journalctl --disk-usage 2>/dev/null | tail -1)"
+  fi
+
+  if [[ -f "$JOURNALD_CONF" ]] && grep -q "SystemMaxUse" "$JOURNALD_CONF" 2>/dev/null; then
+    info "Limites journald déjà configurées — skipping."
+  elif ask "\nAppliquer les limites permanentes journald ?"; then
+    run "mkdir -p /etc/systemd/journald.conf.d"
+    if [[ "$DRY_RUN" == false ]]; then
+      cat > "$JOURNALD_CONF" <<EOF
+[Journal]
+SystemMaxUse=${JOURNAL_MAX_USE}
+SystemMaxFileSize=50M
+MaxRetentionSec=${JOURNAL_MAX_RETENTION}
+EOF
+    else
+      echo -e "  ${YELLOW}[DRY-RUN]${RESET} Écriture de $JOURNALD_CONF"
+    fi
+    run "systemctl restart systemd-journald"
+    success "Journald limité à ${JOURNAL_MAX_USE} / ${JOURNAL_MAX_RETENTION}."
+  fi
+}
+
+# ── /var/log archives ─────────────────────────────────────────────────────────
+do_varlog() {
+  header "4/4 · Archives /var/log"
+  info "Fichiers les plus lourds dans /var/log :"
+  find /var/log -type f \( -name "*.gz" -o -name "*.log" \) \
+    -exec du -sh {} \; 2>/dev/null | sort -rh | head -15
+
+  if ask "\nSupprimer les archives *.gz de plus de 7 jours ?"; then
+    run "find /var/log -type f -name '*.gz' -mtime +7 -delete"
+    success "Archives supprimées."
+  fi
+
+  # daemon.json Docker
+  if [[ "${DOCKER_AVAILABLE:-false}" == true ]]; then
+    DAEMON_JSON="/etc/docker/daemon.json"
+    if [[ -f "$DAEMON_JSON" ]] && grep -q "max-size" "$DAEMON_JSON" 2>/dev/null; then
+      info "daemon.json déjà configuré avec max-size — skipping."
+    elif ask "\nAppliquer les limites de logs Docker (daemon.json) ?"; then
+      if [[ -f "$DAEMON_JSON" ]]; then
+        run "cp $DAEMON_JSON ${DAEMON_JSON}.bak.$(date +%Y%m%d%H%M%S)"
+        warn "Backup : ${DAEMON_JSON}.bak.*"
+      fi
+      if [[ "$DRY_RUN" == false ]]; then
+        cat > "$DAEMON_JSON" <<EOF
 {
   "log-driver": "json-file",
   "log-opts": {
@@ -138,151 +197,105 @@ if $DOCKER_AVAILABLE; then
   }
 }
 EOF
-)
-
-  NEED_DAEMON_UPDATE=true
-  if [[ -f "$DAEMON_JSON" ]]; then
-    # Simple check: if max-size already set we skip
-    if grep -q "max-size" "$DAEMON_JSON" 2>/dev/null; then
-      info "daemon.json already contains max-size — skipping."
-      NEED_DAEMON_UPDATE=false
-    fi
-  fi
-
-  if $NEED_DAEMON_UPDATE; then
-    info "Will write $DAEMON_JSON:"
-    echo "$DESIRED_CONF"
-    if ask "\nApply daemon.json and restart Docker?"; then
-      if [[ -f "$DAEMON_JSON" ]]; then
-        run "cp $DAEMON_JSON ${DAEMON_JSON}.bak.$(date +%Y%m%d%H%M%S)"
-        warn "Backup saved: ${DAEMON_JSON}.bak.*"
+      else
+        echo -e "  ${YELLOW}[DRY-RUN]${RESET} Écriture de $DAEMON_JSON"
       fi
-      run "echo '$DESIRED_CONF' > $DAEMON_JSON"
       run "systemctl restart docker"
-      success "Docker daemon restarted with log limits."
-      warn "⚠  Existing containers keep old config until recreated."
-      warn "   Run: docker compose down && docker compose up -d"
+      success "Docker daemon redémarré avec limites de logs."
+      warn "⚠  Recréer les conteneurs pour appliquer : docker compose down && docker compose up -d"
     fi
   fi
-fi
+}
 
-# ── 3b. journald — purge + limites ───────────────────────────────────────────
-JOURNALD_CONF="/etc/systemd/journald.conf.d/99-size-limit.conf"
+# ── MOTD ──────────────────────────────────────────────────────────────────────
+do_motd() {
+  header "Installation du MOTD dynamique"
+  MOTD_DEST="/etc/profile.d/motd-dynamic.sh"
+  MOTD_SRC="$(dirname "$(realpath "$0")")/motd-dynamic.sh"
 
-JOURNAL_DISK=$(journalctl --disk-usage 2>/dev/null | tail -1)
-info "Journald disk usage : $JOURNAL_DISK"
-info "Détail /var/log/journal :"
-du -sh /var/log/journal/* 2>/dev/null | sort -rh | head -10 \
-  || info "(répertoire vide ou inexistant)"
+  if [[ -f "$MOTD_DEST" ]]; then
+    info "MOTD déjà installé dans $MOTD_DEST."
+    echo -en "${BOLD}Réinstaller / mettre à jour ? [o/N] ${RESET}"
+    read -r rep
+    [[ "${rep:-N}" =~ ^[OoYy]$ ]] || return
+  fi
 
-# -- purge immédiate --
-if ask "\nPurger le journal maintenant (garder ${JOURNAL_MAX_RETENTION} / ${JOURNAL_MAX_USE}) ?"; then
-  run "journalctl --vacuum-time=${JOURNAL_MAX_RETENTION}"
-  run "journalctl --vacuum-size=${JOURNAL_MAX_USE}"
-  success "Journal purgé."
-  info "Espace libéré :"
-  journalctl --disk-usage 2>/dev/null | tail -1 || true
-fi
-
-# -- limites permanentes --
-NEED_JOURNAL_CONF=true
-if [[ -f "$JOURNALD_CONF" ]] && grep -q "SystemMaxUse" "$JOURNALD_CONF" 2>/dev/null; then
-  info "$JOURNALD_CONF déjà configuré — skipping."
-  NEED_JOURNAL_CONF=false
-fi
-
-if $NEED_JOURNAL_CONF && ask "\nAppliquer les limites permanentes journald (${JOURNAL_MAX_USE} max) ?"; then
-  run "mkdir -p /etc/systemd/journald.conf.d"
-  run "cat > $JOURNALD_CONF <<EOF
-[Journal]
-SystemMaxUse=${JOURNAL_MAX_USE}
-SystemMaxFileSize=50M
-MaxRetentionSec=${JOURNAL_MAX_RETENTION}
-EOF"
-  run "systemctl restart systemd-journald"
-  success "Journald limité à ${JOURNAL_MAX_USE} / ${JOURNAL_MAX_RETENTION}."
-fi
-
-# ══════════════════════════════════════════════════════════════════════════════
-header "4/5 · /var/log — archives syslog compressées"
-# ══════════════════════════════════════════════════════════════════════════════
-
-info "Fichiers les plus lourds dans /var/log :"
-find /var/log -type f \( -name "*.gz" -o -name "*.log" \) -exec du -sh {} \; 2>/dev/null \
-  | sort -rh | head -15
-
-if ask "\nSupprimer les archives compressées (*.gz) de plus de 7 jours ?"; then
-  run "find /var/log -type f -name '*.gz' -mtime +7 -delete"
-  success "Archives supprimées."
-fi
-
-# ══════════════════════════════════════════════════════════════════════════════
-header "5/5 · MOTD dynamique (tableau de bord SSH)"
-# ══════════════════════════════════════════════════════════════════════════════
-
-MOTD_SRC="$(dirname "$(realpath "$0")")/motd-dynamic.sh"
-MOTD_DEST="/etc/profile.d/motd-dynamic.sh"
-MOTD_URL="https://raw.githubusercontent.com/Eucliwood090/Linux-cleanup/main/motd-dynamic.sh"
-
-if [[ -f "$MOTD_DEST" ]]; then
-  info "MOTD déjà installé dans $MOTD_DEST — skipping."
-else
-  # Si le fichier n'est pas à côté du script, on le télécharge
+  # Cherche le fichier localement, sinon télécharge
   if [[ ! -f "$MOTD_SRC" ]]; then
-    warn "motd-dynamic.sh introuvable localement — tentative de téléchargement..."
-    TMP_MOTD=$(mktemp /tmp/motd-dynamic.XXXXXX.sh)
+    info "motd-dynamic.sh non trouvé localement → téléchargement depuis GitHub..."
+    TMP_MOTD=$(mktemp /tmp/motd-dynamic-XXXXXX.sh)
+    DL_OK=false
     if command -v curl &>/dev/null; then
-      curl -fsSL "$MOTD_URL" -o "$TMP_MOTD" 2>/dev/null && MOTD_SRC="$TMP_MOTD" \
-        || { error "Téléchargement échoué. Place motd-dynamic.sh dans le même dossier que ce script."; MOTD_SRC=""; }
-    elif command -v wget &>/dev/null; then
-      wget -q "$MOTD_URL" -O "$TMP_MOTD" 2>/dev/null && MOTD_SRC="$TMP_MOTD" \
-        || { error "Téléchargement échoué. Place motd-dynamic.sh dans le même dossier que ce script."; MOTD_SRC=""; }
-    else
-      error "curl et wget introuvables — impossible de télécharger le MOTD."
-      MOTD_SRC=""
+      curl -fsSL "$MOTD_URL" -o "$TMP_MOTD" && DL_OK=true || true
     fi
+    if [[ "$DL_OK" == false ]] && command -v wget &>/dev/null; then
+      wget -q "$MOTD_URL" -O "$TMP_MOTD" && DL_OK=true || true
+    fi
+    if [[ "$DL_OK" == false ]]; then
+      error "Impossible de télécharger le MOTD."
+      error "Vérifie ta connexion ou télécharge manuellement :"
+      error "  $MOTD_URL"
+      rm -f "$TMP_MOTD"
+      return
+    fi
+    # Vérification basique : le fichier doit contenir du bash
+    if ! grep -q "#!/" "$TMP_MOTD" 2>/dev/null; then
+      error "Le fichier téléchargé semble invalide (repo GitHub vide ?)."
+      rm -f "$TMP_MOTD"
+      return
+    fi
+    MOTD_SRC="$TMP_MOTD"
+    success "Téléchargement réussi."
   fi
 
-  if [[ -n "$MOTD_SRC" && -f "$MOTD_SRC" ]]; then
-    info "Installe un tableau de bord affiché à chaque connexion SSH :"
-    echo "  - Disque, RAM, CPU, température"
-    echo "  - Conteneurs Docker actifs / arrêtés"
-    echo "  - Processus gourmands (CPU/RAM > 5%)"
-    echo "  - Services systemd en échec"
-    echo "  - Taille logs Docker + journald"
+  cp "$MOTD_SRC" "$MOTD_DEST"
+  chmod +x "$MOTD_DEST"
+  [[ "$MOTD_SRC" == /tmp/* ]] && rm -f "$MOTD_SRC"
 
-    # Toujours demander, même en mode --auto
-    echo -en "${BOLD}\nInstaller le MOTD dynamique ? [Y/n] ${RESET}"
-    read -r reply
-    if [[ "${reply:-Y}" =~ ^[Yy]$ ]]; then
-      run "cp $MOTD_SRC $MOTD_DEST"
-      run "chmod +x $MOTD_DEST"
-      if [[ -f /etc/motd ]] && [[ -s /etc/motd ]]; then
-        run "mv /etc/motd /etc/motd.bak"
-        info "Ancien /etc/motd sauvegardé dans /etc/motd.bak"
-      fi
-      success "MOTD installé. Visible à la prochaine connexion SSH."
-      info "Pour tester maintenant : bash $MOTD_DEST"
-    else
-      info "MOTD ignoré."
-    fi
-    # Nettoyage fichier temporaire
-    [[ "$MOTD_SRC" == /tmp/* ]] && rm -f "$MOTD_SRC"
+  # Désactiver l'ancien MOTD statique
+  if [[ -f /etc/motd ]] && [[ -s /etc/motd ]]; then
+    mv /etc/motd /etc/motd.bak
+    info "Ancien /etc/motd sauvegardé dans /etc/motd.bak"
   fi
-fi
 
-# ── summary ───────────────────────────────────────────────────────────────────
-echo ""
-header "Summary"
-echo -e "Disk after:  $(disk_usage_before)"
-$DRY_RUN && warn "DRY-RUN — no changes were made. Re-run without --dry-run to apply."
-echo ""
-success "Terminé ! Prochaines étapes recommandées :"
-echo "  1. Recréer les conteneurs Docker pour appliquer les limites de logs :"
-echo "       docker compose down && docker compose up -d"
-echo "  2. Tester le MOTD SSH tout de suite :"
-echo "       bash /etc/profile.d/motd-dynamic.sh"
-echo "  3. Planifier ce script mensuellement via cron :"
-echo "       echo '0 3 1 * * root bash /usr/local/sbin/linux-cleanup.sh --auto' \\"
-echo "         | sudo tee /etc/cron.d/linux-cleanup"
-echo ""
+  success "MOTD installé avec succès !"
+  echo ""
+  info "Tester maintenant :"
+  echo "    bash $MOTD_DEST"
+}
+
+# ── Résumé final ──────────────────────────────────────────────────────────────
+do_summary() {
+  echo ""
+  sep
+  echo -e "  ${BOLD}${GREEN}✔ Terminé !${RESET}"
+  echo -e "  Disque après : $(disk_usage)"
+  sep
+  echo ""
+  echo -e "  ${BOLD}Prochaines étapes recommandées :${RESET}"
+  echo "  • Recréer les conteneurs Docker :"
+  echo "      docker compose down && docker compose up -d"
+  echo "  • Tester le MOTD SSH :"
+  echo "      bash /etc/profile.d/motd-dynamic.sh"
+  echo "  • Planifier ce script mensuellement :"
+  echo "      echo '0 3 1 * * root bash /usr/local/sbin/linux-cleanup.sh' \\"
+  echo "        | sudo tee /etc/cron.d/linux-cleanup"
+  echo ""
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  EXÉCUTION SELON LE MODE
+# ══════════════════════════════════════════════════════════════════════════════
+
+case "$MODE" in
+  auto|manuel)
+    do_docker_logs
+    do_docker_prune
+    do_journald
+    do_varlog
+    do_summary
+    ;;
+  motd)
+    do_motd
+    ;;
+esac
