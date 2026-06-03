@@ -204,16 +204,49 @@ EOF"
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-header "4/4 · /var/log — old syslog / compressed archives"
+header "4/5 · /var/log — archives syslog compressées"
 # ══════════════════════════════════════════════════════════════════════════════
 
-info "Largest files in /var/log:"
+info "Fichiers les plus lourds dans /var/log :"
 find /var/log -type f \( -name "*.gz" -o -name "*.log" \) -exec du -sh {} \; 2>/dev/null \
   | sort -rh | head -15
 
-if ask "\nDelete compressed log archives (*.gz) older than 7 days?"; then
+if ask "\nSupprimer les archives compressées (*.gz) de plus de 7 jours ?"; then
   run "find /var/log -type f -name '*.gz' -mtime +7 -delete"
-  success "Old compressed logs deleted."
+  success "Archives supprimées."
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+header "5/5 · MOTD dynamique (tableau de bord SSH)"
+# ══════════════════════════════════════════════════════════════════════════════
+
+MOTD_SRC="$(dirname "$0")/motd-dynamic.sh"
+MOTD_DEST="/etc/profile.d/motd-dynamic.sh"
+
+if [[ -f "$MOTD_DEST" ]]; then
+  info "MOTD déjà installé dans $MOTD_DEST — skipping."
+elif [[ ! -f "$MOTD_SRC" ]]; then
+  warn "motd-dynamic.sh introuvable à côté du script — étape ignorée."
+  warn "Télécharge-le depuis : https://github.com/YOURNAME/linux-cleanup"
+else
+  info "Installe un tableau de bord affiché à chaque connexion SSH :"
+  echo "  - Disque, RAM, CPU, température"
+  echo "  - Conteneurs Docker actifs / arrêtés"
+  echo "  - Processus gourmands (CPU/RAM > 5%)"
+  echo "  - Services systemd en échec"
+  echo "  - Taille logs Docker + journald"
+
+  if ask "\nInstaller le MOTD dynamique ?"; then
+    run "cp $MOTD_SRC $MOTD_DEST"
+    run "chmod +x $MOTD_DEST"
+    # Désactiver l'ancien MOTD statique si présent
+    if [[ -f /etc/motd ]] && [[ -s /etc/motd ]]; then
+      run "mv /etc/motd /etc/motd.bak"
+      info "Ancien /etc/motd sauvegardé dans /etc/motd.bak"
+    fi
+    success "MOTD installé. Visible à la prochaine connexion SSH."
+    info "Pour tester maintenant : bash $MOTD_DEST"
+  fi
 fi
 
 # ── summary ───────────────────────────────────────────────────────────────────
@@ -222,10 +255,12 @@ header "Summary"
 echo -e "Disk after:  $(disk_usage_before)"
 $DRY_RUN && warn "DRY-RUN — no changes were made. Re-run without --dry-run to apply."
 echo ""
-success "Done! Recommended next steps:"
-echo "  1. Recreate Docker containers to apply new log limits:"
+success "Terminé ! Prochaines étapes recommandées :"
+echo "  1. Recréer les conteneurs Docker pour appliquer les limites de logs :"
 echo "       docker compose down && docker compose up -d"
-echo "  2. Schedule this script monthly via cron:"
+echo "  2. Tester le MOTD SSH tout de suite :"
+echo "       bash /etc/profile.d/motd-dynamic.sh"
+echo "  3. Planifier ce script mensuellement via cron :"
 echo "       echo '0 3 1 * * root bash /usr/local/sbin/linux-cleanup.sh --auto' \\"
 echo "         | sudo tee /etc/cron.d/linux-cleanup"
 echo ""
